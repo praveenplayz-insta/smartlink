@@ -63,6 +63,7 @@ export default function App() {
             <span>
               <strong>{l.short_url}</strong><br />
               <small>{l.original_url}</small>
+              {l.summary && <><br /><small>{l.summary} {l.tags && `· ${l.tags}`}</small></>}
             </span>
             <span>{l.clicks} clicks</span>
           </div>
