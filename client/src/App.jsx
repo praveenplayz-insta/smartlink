@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 
-const API = 'http://localhost:3000';
+const API = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 
 export default function App() {
   const [links, setLinks] = useState([]);
@@ -10,6 +10,9 @@ export default function App() {
   const [error, setError] = useState('');
   const [selected, setSelected] = useState(null);
   const [stats, setStats] = useState(null);
+  const [question, setQuestion] = useState('');
+  const [answer, setAnswer] = useState('');
+  const [asking, setAsking] = useState(false);
 
   async function loadLinks() {
     const res = await fetch(`${API}/api/links`);
@@ -39,6 +42,25 @@ export default function App() {
     setSlug('');
     loadLinks();
   }
+
+async function askQuestion(e) {
+  e.preventDefault();
+  if (!question.trim()) return;
+  setAsking(true);
+  setAnswer('');
+  try {
+    const res = await fetch(`${API}/api/ask`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question }),
+    });
+    const data = await res.json();
+    setAnswer(res.ok ? data.answer : data.error || 'Something went wrong');
+  } catch {
+    setAnswer('Could not reach the server');
+  }
+  setAsking(false);
+}
 
   const perDay = stats?.perDay.map(d => ({ ...d, day: d.day.slice(0, 10) })) || [];
 
@@ -70,6 +92,18 @@ export default function App() {
         ))}
       </div>
 
+      <div className="card">
+  <h3>Ask your analytics</h3>
+  <form className="row" onSubmit={askQuestion}>
+    <input
+      placeholder="e.g. Which link performed best this week?"
+      value={question}
+      onChange={e => setQuestion(e.target.value)}
+    />
+    <button type="submit" disabled={asking}>{asking ? 'Thinking...' : 'Ask'}</button>
+  </form>
+  {answer && <p>{answer}</p>}
+</div>
       {selected && stats && (
         <div className="grid">
           <div className="card">
