@@ -125,25 +125,85 @@ app.get('/api/links', async (req, res) => {
 });
 
 // Stats for one link
-app.get('/api/links/:id/stats', async (req, res) => {
-  const id = req.params.id;
+const UA = "coalesce(user_agent, '')";
+const DEVICE_SQL = `case
+  when ${UA} ilike '%ipad%' or ${UA} ilike '%tablet%' or (${UA} ilike '%android%' and ${UA} not ilike '%mobile%') then 'Tablet'
+  when ${UA} ilike '%mobile%' or ${UA} ilike '%iphone%' then 'Mobile'
+  else 'Desktop' end`;
+const OS_SQL = `case
+  when ${UA} ilike '%android%' then 'Android'
+  when ${UA} ilike '%iphone%' or ${UA} ilike '%ipad%' then 'iOS'
+  when ${UA} ilike '%windows%' then 'Windows'
+  when ${UA} ilike '%mac os%' or ${UA} ilike '%macintosh%' then 'macOS'
+  when ${UA} ilike '%linux%' then 'Linux'
+  else 'Other' end`;
+const BROWSER_SQL = `case
+  when ${UA} ilike '%edg/%' or ${UA} ilike '%edge%' then 'Edge'
+  when ${UA} ilike '%opr/%' or ${UA} ilike '%opera%' then 'Opera'
+  when ${UA} ilike '%firefox%' then 'Firefox'
+  when ${UA} ilike '%chrome%' or ${UA} ilike '%crios%' then 'Chrome'
+  when ${UA} ilike '%safari%' then 'Safari'
+  else 'Other' end`;
+
+// Overall totals
+app.get('/api/summary', async (req, res) => {
   try {
-    const perDay = await pool.query(
-      `select clicked_at::date as day, count(*)::int as clicks
-       from clicks where link_id = $1 group by 1 order by 1`, [id]);
-    const referrers = await pool.query(
-      `select coalesce(referrer, 'Direct') as referrer, count(*)::int as clicks
-       from clicks where link_id = $1 group by 1 order by 2 desc limit 5`, [id]);
-    const devices = await pool.query(
-      `select case when user_agent ilike '%mobile%' then 'Mobile' else 'Desktop' end as device,
-       count(*)::int as clicks from clicks where link_id = $1 group by 1`, [id]);
-    res.json({ perDay: perDay.rows, referrers: referrers.rows, devices: devices.rows });
+    const r = await pool.query(`
+      select
+        (select count(*)::int from links) as total_links,
+        (select count(*)::int from clicks) as total_clicks,
+        (select count(*)::int from clicks where clicked_at::date = current_date) as clicks_today`);
+    res.json(r.rows[0]);
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: 'Server error' });
   }
 });
 
+// Stats for one link
+app.get('/api/links/:id/stats', async (req, res) => {
+  const id = req.params.id;
+  const group = col =>
+    pool.query(
+      `select ${col} as name, count(*)::int as clicks
+       from clicks where link_id = $1 group by 1 order by 2 desc`,
+      [id]
+    );
+  try {
+    const [perDay, referrers, devices, os, browsers, totals] = await Promise.all([
+      pool.query(
+        `select clicked_at::date as day, count(*)::int as clicks
+         from clicks where link_id = $1 group by 1 order by 1`,
+        [id]
+      ),
+      pool.query(
+        `select coalesce(referrer, 'Direct') as referrer, count(*)::int as clicks
+         from clicks where link_id = $1 group by 1 order by 2 desc limit 5`,
+        [id]
+      ),
+      group(DEVICE_SQL),
+      group(OS_SQL),
+      group(BROWSER_SQL),
+      pool.query(
+        `select count(*)::int as total, count(distinct user_agent)::int as unique_devices
+         from clicks where link_id = $1`,
+        [id]
+      ),
+    ]);
+    res.json({
+      perDay: perDay.rows,
+      referrers: referrers.rows,
+      devices: devices.rows,
+      os: os.rows,
+      browsers: browsers.rows,
+      total: totals.rows[0].total,
+      uniqueDevices: totals.rows[0].unique_devices,
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
 // Ask your analytics
 app.post('/api/ask', async (req, res) => {
   const question = String(req.body.question || '').slice(0, 300);
@@ -204,6 +264,12 @@ Question: ${question}`,
 });
 
 // Redirect + log the click
+function getVisitorId(req) {
+  const m = (req.headers.cookie || '').match(/(?:^|;\s*)vid=([^;]+)/);
+  return m ? m[1] : null;
+}
+
+// Redirect + log the click (once per visitor per link)
 app.get('/:slug', async (req, res) => {
   try {
     const r = await pool.query('select * from links where slug = $1', [req.params.slug]);
@@ -212,10 +278,30 @@ app.get('/:slug', async (req, res) => {
     if (link.expires_at && new Date(link.expires_at) < new Date())
       return res.status(410).send('Link expired');
 
+    let vid = getVisitorId(req);
+    if (!vid) {
+      vid = nanoid(16);
+      const secure = req.headers['x-forwarded-proto'] === 'https' ? '; Secure' : '';
+      res.setHeader(
+        'Set-Cookie',
+        `vid=${vid}; Max-Age=31536000; Path=/; HttpOnly; SameSite=Lax${secure}`
+      );
+    }
+
     pool
       .query(
-        'insert into clicks (link_id, referrer, user_agent, country) values ($1, $2, $3, $4)',
-        [link.id, req.get('referer') || null, req.get('user-agent') || null, req.get('cf-ipcountry') || null]
+        `insert into clicks (link_id, referrer, user_agent, country, visitor_id)
+         select $1::bigint, $2::text, $3::text, $4::text, $5::text
+         where not exists (
+           select 1 from clicks where link_id = $1 and visitor_id = $5
+         )`,
+        [
+          link.id,
+          req.get('referer') || null,
+          req.get('user-agent') || null,
+          req.get('cf-ipcountry') || null,
+          vid,
+        ]
       )
       .catch(console.error);
 

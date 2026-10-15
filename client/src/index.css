@@ -8,3 +8,6 @@ button { padding: 10px 16px; border: 0; border-radius: 8px; background: #4f46e5;
 .link:hover { background: #fafafa; }
 .err { color: #c0392b; }
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+.totals { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 16px; margin-bottom: 16px; }
+.big { font-size: 28px; font-weight: 700; margin: 4px 0 0; }
+.muted { color: #666; font-size: 13px; }
